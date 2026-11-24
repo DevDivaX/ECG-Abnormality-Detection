@@ -18,8 +18,22 @@ from typing import List, Dict, Any, Optional, Union
 import numpy as np
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
+if __package__:
+    from .pdf_report import (
+        PDFReportRequest,
+        render_pdf_report,
+        report_download_filename,
+        resolve_analysis_datetime,
+    )
+else:
+    from pdf_report import (
+        PDFReportRequest,
+        render_pdf_report,
+        report_download_filename,
+        resolve_analysis_datetime,
+    )
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -86,6 +100,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 
@@ -209,6 +224,24 @@ def read_root():
             "PDF reports (no direct waveform rasterization permitted)"
         ]
     }
+
+
+@app.post("/reports/pdf", summary="Generate PDF for the current ECG analysis")
+def create_pdf_report(report: PDFReportRequest):
+    """Render a PDF from the current analysis payload without persisting report data."""
+    analysis_date = resolve_analysis_datetime(report.analysis_date)
+    report = report.model_copy(update={"analysis_date": analysis_date})
+    try:
+        pdf_bytes = render_pdf_report(report)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    filename = report_download_filename(report.filename, analysis_date)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # Signal parsing and segmentation helpers

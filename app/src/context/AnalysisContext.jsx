@@ -224,8 +224,10 @@ export function AnalysisProvider({ children }) {
 
       // Submit exactly 187 numeric floats to FastAPI POST /predict
       const jsonResult = await predictSignal(exact187);
+      const analyzedAt = new Date().toISOString();
 
       const responseData = {
+        analyzed_at: analyzedAt,
         mode: 'single_heartbeat',
         message: 'Successfully analyzed single 187-sample heartbeat via 1D-CNN.',
         total_heartbeats: 1,
@@ -269,7 +271,10 @@ export function AnalysisProvider({ children }) {
   // Load an existing record from history
   const loadFromHistory = useCallback((historyEntry) => {
     if (!historyEntry || !historyEntry.result) return;
-    setAnalysisResult(historyEntry.result);
+    setAnalysisResult({
+      ...historyEntry.result,
+      analyzed_at: historyEntry.result.analyzed_at || historyEntry.timestamp
+    });
     setSelectedBeatIndex(0);
     setCurrentFile({
       file: null,

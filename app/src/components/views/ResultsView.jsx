@@ -15,7 +15,8 @@ import {
   Clock,
   HeartPulse,
   TrendingUp,
-  Download
+  Download,
+  Printer
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -27,6 +28,7 @@ import {
   Cell
 } from 'recharts';
 import { useAnalysis } from '../../context/AnalysisContext';
+import { downloadPdfReport } from '../../utils/api';
 
 const CLASS_COLORS = {
   Normal: '#10b981', // Emerald
@@ -45,9 +47,12 @@ const AAMI_CODES = {
 };
 
 export default function ResultsView() {
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
+  const [pdfError, setPdfError] = useState('');
   const {
     analysisResult,
     currentFile,
+    previewSignal,
     selectedBeatIndex,
     setSelectedBeatIndex,
     setActiveNav
@@ -76,6 +81,10 @@ export default function ResultsView() {
     );
   }
 
+  const analysisDate = analysisResult.analyzed_at
+    ? new Date(analysisResult.analyzed_at)
+    : null;
+  const hasAnalysisDate = analysisDate && !Number.isNaN(analysisDate.getTime());
   const {
     mode,
     dominant_rhythm,
@@ -96,6 +105,73 @@ export default function ResultsView() {
   const activeAamiCode = activeBeat.aami_code || AAMI_CODES[activeClassName] || 'N';
   const activeConfidence = activeBeat.confidence || 0;
   const activeProbs = activeBeat.probabilities || {};
+  const isValidReportPrediction = Object.keys(AAMI_CODES).includes(activeBeat.predicted_class_name) &&
+    typeof activeBeat.confidence === 'number' &&
+    Number.isFinite(activeBeat.confidence) &&
+    Object.keys(AAMI_CODES).every((name) =>
+      typeof activeProbs[name] === 'number' &&
+      Number.isFinite(activeProbs[name]) &&
+      activeProbs[name] >= 0 &&
+      activeProbs[name] <= 100
+    );
+  const reportPoints = Array.isArray(activeBeat.signal_points) && activeBeat.signal_points.length
+    ? activeBeat.signal_points
+    : previewSignal?.points || [];
+  const printablePoints = reportPoints.slice(0, 10000).filter(
+    (point) => Number.isFinite(point.time) && Number.isFinite(point.voltage)
+  );
+  const waveformMin = printablePoints.length
+    ? Math.min(...printablePoints.map((point) => point.voltage))
+    : 0;
+  const waveformMax = printablePoints.length
+    ? Math.max(...printablePoints.map((point) => point.voltage))
+    : 0;
+  const waveformRange = waveformMax - waveformMin || 1;
+  const printWaveformPath = printablePoints.map((point, index) => {
+    const x = printablePoints.length > 1 ? (index / (printablePoints.length - 1)) * 800 : 400;
+    const y = 90 - ((point.voltage - waveformMin) / waveformRange) * 80;
+    return `${index === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`;
+  }).join(' ');
+
+  const handleDownloadPdf = async () => {
+    setPdfError('');
+    if (!isValidReportPrediction) {
+      setPdfError('PDF report data is incomplete or invalid. Run the analysis again to generate a report.');
+      return;
+    }
+    setIsDownloadingPdf(true);
+    try {
+      const sampleRate = Number(previewSignal?.sampleRate);
+      const duration = Number(previewSignal?.durationSeconds);
+      const { blob, filename } = await downloadPdfReport({
+        filename: currentFile?.name || 'ECG_Recording.csv',
+        analysis_date: hasAnalysisDate ? analysisDate.toISOString() : null,
+        predicted_class_name: activeClassName,
+        confidence: activeConfidence,
+        probabilities: activeProbs,
+        signal_points: printablePoints.slice(0, 10000),
+        ...(Number.isFinite(sampleRate) && sampleRate > 0
+          ? { sampling_frequency_hz: sampleRate }
+          : {}),
+        ...(Number.isFinite(duration) && duration >= 0
+          ? { signal_duration_seconds: duration }
+          : {}),
+        ...(previewSignal?.totalSamples || printablePoints.length
+          ? { sample_count: previewSignal?.totalSamples || printablePoints.length }
+          : {})
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setPdfError(error.message || 'PDF report could not be generated.');
+    } finally {
+      setIsDownloadingPdf(false);
+    }
+  };
 
   // Build chart data from actual backend probability values
   const chartData = [
@@ -108,13 +184,42 @@ export default function ResultsView() {
     name,
     code: AAMI_CODES[name],
     prob: typeof activeProbs[name] === 'number' ? activeProbs[name] : 0,
+    available: typeof activeProbs[name] === 'number' &&
+      Number.isFinite(activeProbs[name]) &&
+      activeProbs[name] >= 0 &&
+      activeProbs[name] <= 100,
     color: CLASS_COLORS[name] || '#06b6d4'
   }));
 
   const isDominantNormal = (dominant_rhythm || activeClassName) === 'Normal';
 
   return (
-    <div className="space-y-6 max-w-6xl mx-auto">
+    <div className="results-view">
+      <div className="results-interactive space-y-6 max-w-6xl mx-auto">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-xl font-bold text-white">ECG Analysis Results</h1>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={handleDownloadPdf}
+            disabled={isDownloadingPdf || !isValidReportPrediction}
+            title={!isValidReportPrediction ? 'Valid prediction data and all five probabilities are required.' : undefined}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-lg shadow-cyan-950/30 hover:brightness-110 disabled:opacity-60 transition"
+          >
+            <Download className="w-4 h-4" />
+            <span>{isDownloadingPdf ? 'Generating PDF…' : 'Download PDF Report'}</span>
+          </button>
+          <button
+            onClick={() => window.print()}
+            className="inline-flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm font-medium bg-slate-800 border border-slate-700 text-slate-200 hover:text-white hover:bg-slate-700 transition"
+          >
+            <Printer className="w-4 h-4" />
+            <span>Print / Save as PDF</span>
+          </button>
+        </div>
+        {pdfError && (
+          <p role="alert" className="w-full text-sm text-rose-300">{pdfError}</p>
+        )}
+      </div>
       {/* Top Banner: Primary Classification Result */}
       <div className="rounded-2xl bg-gradient-to-r from-slate-900 to-slate-850 border border-slate-800 p-6 space-y-4 shadow-xl">
         <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-800">
@@ -435,6 +540,75 @@ export default function ResultsView() {
           <span>Generate Analysis Report</span>
         </button>
       </div>
+    </div>
+    <article className="print-only-report" aria-label="Printable ECG Analysis Report">
+      <header className="print-report-header">
+        <div className="print-report-brand">CardioTrace</div>
+        <h1>ECG Analysis Report</h1>
+        <p>AI-powered heartbeat classification · Educational analysis summary</p>
+      </header>
+      <section className="print-report-section print-report-metadata">
+        <div><strong>Analysis date &amp; time</strong><span>{hasAnalysisDate ? analysisDate.toLocaleString() : 'Not recorded'}</span></div>
+        <div><strong>Uploaded ECG file</strong><span>{currentFile?.name || 'Not provided'}</span></div>
+        {previewSignal?.sampleRate && (
+          <div><strong>Sampling frequency</strong><span>{previewSignal.sampleRate} Hz</span></div>
+        )}
+        {previewSignal?.durationSeconds !== undefined && (
+          <div><strong>Signal duration</strong><span>{previewSignal.durationSeconds} s</span></div>
+        )}
+        {printablePoints.length > 0 && (
+          <div><strong>Number of samples</strong><span>{previewSignal?.totalSamples || printablePoints.length}</span></div>
+        )}
+      </section>
+      <section className="print-report-section">
+        <h2>Prediction</h2>
+        <div className="print-report-prediction">
+          <strong>{isValidReportPrediction ? activeClassName : 'Not available'}</strong>
+          <span>AAMI Class {isValidReportPrediction ? activeAamiCode : 'Not available'}</span>
+          <span>Confidence: {isValidReportPrediction ? `${activeConfidence.toFixed(2)}%` : 'Not available'}</span>
+        </div>
+      </section>
+      <section className="print-report-section">
+        <h2>Probability distribution</h2>
+        <table className="print-report-table">
+          <thead><tr><th>Heartbeat class</th><th>AAMI code</th><th>Probability</th></tr></thead>
+          <tbody>
+            {chartData.map((item) => (
+              <tr key={item.code}>
+                <td>{item.name}</td>
+                <td>{item.code}</td>
+                <td>{item.available ? `${item.prob.toFixed(2)}%` : 'Not available'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="print-report-bars" aria-label="Probability chart">
+          {chartData.map((item) => (
+            <div className="print-report-bar-row" key={item.code}>
+              <span>{item.name}</span>
+              <div>{item.available && <i style={{ width: `${Math.min(100, Math.max(0, item.prob))}%`, backgroundColor: item.color }} />}</div>
+              <b>{item.available ? `${item.prob.toFixed(2)}%` : 'N/A'}</b>
+            </div>
+          ))}
+        </div>
+      </section>
+      <section className="print-report-section">
+        <h2>ECG waveform</h2>
+        {printablePoints.length > 0 ? (
+          <svg className="print-report-waveform" viewBox="0 0 800 100" role="img" aria-label="ECG waveform">
+            <path d={printWaveformPath} />
+          </svg>
+        ) : <p>Waveform data was not available for this analysis.</p>}
+      </section>
+      <section className="print-report-section">
+        <h2>Model information</h2>
+        <p>1D Convolutional Neural Network (1D-CNN); five AAMI heartbeat classes; 187-sample heartbeat input.</p>
+      </section>
+      <aside className="print-report-disclaimer">
+        <strong>Educational-use notice</strong>
+        <p>This system is for educational purposes and is not a clinically validated diagnostic tool. Do not use these results to make medical decisions.</p>
+      </aside>
+    </article>
     </div>
   );
 }
