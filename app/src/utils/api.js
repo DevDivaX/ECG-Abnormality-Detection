@@ -212,5 +212,43 @@ export async function inspectCsvFile(file) {
       throw new Error(`Backend unavailable at ${baseUrl}. Ensure FastAPI is active.`);
     }
     throw err;
+  
+    
+  }
+}
+
+/**
+ * Generates a PDF from the current analysis only; the backend does not persist the payload.
+ */
+export async function downloadPdfReport(reportData) {
+  const baseUrl = getApiBaseUrl();
+  try {
+    const res = await fetch(`${baseUrl}/reports/pdf`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(reportData)
+    });
+
+    if (!res.ok) {
+      let detail = `Server error (HTTP ${res.status})`;
+      try {
+        const data = await res.json();
+        detail = data.detail || detail;
+      } catch {
+        // Keep the HTTP error message when the server does not return JSON.
+      }
+      throw new Error(detail);
+    }
+
+    const disposition = res.headers.get('Content-Disposition') || '';
+    const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1] || 'CardioTrace_ECG_Report.pdf';
+    return { blob: await res.blob(), filename };
+  } catch (err) {
+    if (err.message.includes('Failed to fetch') || err.name === 'TypeError') {
+      throw new Error(`Backend unavailable at ${baseUrl}. Please check that FastAPI server is running on port 8000.`);
+    }
+    throw err;
   }
 }

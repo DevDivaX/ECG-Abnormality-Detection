@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   FileText,
   Printer,
@@ -13,6 +13,7 @@ import {
   ArrowRight
 } from 'lucide-react';
 import { useAnalysis } from '../../context/AnalysisContext';
+import { downloadPdfReport } from '../../utils/api';
 
 const CLASS_COLORS = {
   Normal: '#10b981',
@@ -83,6 +84,52 @@ export default function ReportsView() {
   const dominantConfidence = activeBeat.confidence || 0;
   const probs = activeBeat.probabilities || probabilities || {};
 
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
+  const [pdfError, setPdfError] = useState('');
+
+  // PDF Download handler
+  const handleDownloadPdf = async () => {
+    setPdfError('');
+    setIsDownloadingPdf(true);
+    try {
+      const sampleRate = Number(previewSignal?.sampleRate) || 125;
+      const duration = Number(previewSignal?.durationSeconds) || (previewSignal?.points?.length ? Number((previewSignal.points.length / sampleRate).toFixed(2)) : 1.496);
+      const points = Array.isArray(activeBeat.signal_points) && activeBeat.signal_points.length
+        ? activeBeat.signal_points
+        : previewSignal?.points || [];
+      const printablePoints = points.slice(0, 10000).filter(
+        (point) => Number.isFinite(point.time) && Number.isFinite(point.voltage)
+      );
+
+      const analysisDate = analysisResult.analyzed_at && !Number.isNaN(new Date(analysisResult.analyzed_at).getTime())
+        ? new Date(analysisResult.analyzed_at).toISOString()
+        : null;
+
+      const { blob, filename } = await downloadPdfReport({
+        filename: currentFile?.name || 'ECG_Recording.csv',
+        analysis_date: analysisDate,
+        predicted_class_name: dominantClass,
+        confidence: dominantConfidence,
+        probabilities: probs,
+        signal_points: printablePoints,
+        sampling_frequency_hz: sampleRate,
+        signal_duration_seconds: duration,
+        sample_count: previewSignal?.totalSamples || printablePoints.length || 187
+      });
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setPdfError(err.message || 'Failed to generate PDF report.');
+    } finally {
+      setIsDownloadingPdf(false);
+    }
+  };
+
   // Print handler
   const handlePrint = () => {
     window.print();
@@ -131,7 +178,16 @@ export default function ReportsView() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={handleDownloadPdf}
+            disabled={isDownloadingPdf}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-md hover:brightness-110 transition disabled:opacity-60"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>{isDownloadingPdf ? 'Generating PDF…' : 'Download PDF Report'}</span>
+          </button>
+
           <button
             onClick={handleDownloadJson}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium bg-slate-800 text-slate-200 hover:text-white hover:bg-slate-700 transition border border-slate-700"
@@ -142,12 +198,15 @@ export default function ReportsView() {
 
           <button
             onClick={handlePrint}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-lg hover:brightness-110 transition active:scale-95"
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-medium bg-slate-800 border border-slate-700 text-slate-200 hover:text-white hover:bg-slate-700 transition"
           >
             <Printer className="w-3.5 h-3.5" />
             <span>Print / Save as PDF</span>
           </button>
         </div>
+        {pdfError && (
+          <p role="alert" className="w-full text-xs text-rose-300 font-medium">{pdfError}</p>
+        )}
       </div>
 
       {/* Printable Report Document Card */}
@@ -173,7 +232,9 @@ export default function ReportsView() {
           <div className="text-right text-xs space-y-1 font-mono">
             <div className="text-slate-400">Analysis Date & Time:</div>
             <div className="text-white font-semibold">
-              {new Date().toLocaleString()}
+              {analysisResult.analyzed_at && !Number.isNaN(new Date(analysisResult.analyzed_at).getTime())
+                ? new Date(analysisResult.analyzed_at).toLocaleString()
+                : 'Not recorded'}
             </div>
             <div className="text-[11px] text-cyan-400">
               Report ID: CTR-{Date.now().toString(36).toUpperCase()}
@@ -198,7 +259,7 @@ export default function ReportsView() {
           <div>
             <span className="text-slate-400 block">Estimated Heart Rate</span>
             <span className="font-semibold text-cyan-400 font-mono">
-              {estimated_hr > 0 ? `${estimated_hr} BPM` : '125 Hz Nominal'}
+              {estimated_hr > 0 ? `${estimated_hr} BPM` : 'N/A'}
             </span>
           </div>
           <div>
